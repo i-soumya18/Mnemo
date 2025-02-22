@@ -137,27 +137,32 @@ class Memory:
 
 class EnhancedMemorySystem:
     def __init__(self):
-        self.embedder = TransformerEmbedder()
-        self.embedding_dim = Config.EMBEDDING_DIM
-        self.short_term_memory: List[Memory] = []
-        self.long_term_memory: List[Memory] = []
-        self.semantic_memory: Dict[str, List[str]] = defaultdict(list)
-        self.memory_graph = nx.DiGraph()
-        self.episode_tracker = defaultdict(list)
         try:
-            from transformers import pipeline
-            self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-            logging.info("Initialized summarizer")
+            self.embedder = TransformerEmbedder()
+            self.embedding_dim = Config.EMBEDDING_DIM
+            self.short_term_memory: List[Memory] = []
+            self.long_term_memory: List[Memory] = []
+            self.semantic_memory: Dict[str, List[str]] = defaultdict(list)
+            self.memory_graph = nx.DiGraph()
+            self.episode_tracker = defaultdict(list)
+            try:
+                from transformers import pipeline
+                self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+                logging.info("Initialized summarizer")
+            except Exception as e:
+                logging.warning(f"Failed to initialize summarizer: {e}. Proceeding without summarization.")
+                self.summarizer = None
+
+            self.faiss_index = faiss.IndexFlatL2(self.embedding_dim)
+            self.memory_id_to_content = {}
+            self.next_id = 0
+
+            self.load_memories()
+            self.rebuild_faiss_index()
+            logging.info("EnhancedMemorySystem initialized successfully")
         except Exception as e:
-            logging.error(f"Failed to initialize summarizer: {e}")
-            self.summarizer = None
-
-        self.faiss_index = faiss.IndexFlatL2(self.embedding_dim)
-        self.memory_id_to_content = {}
-        self.next_id = 0
-
-        self.load_memories()
-        self.rebuild_faiss_index()
+            logging.error(f"Failed to initialize EnhancedMemorySystem: {e}")
+            raise
 
     def extract_context_tags(self, text: str) -> List[str]:
         common_topics = ["work", "family", "health", "technology", "education"]
@@ -411,13 +416,15 @@ class EnhancedMemorySystem:
 
 class Chatbot:
     def __init__(self):
-        self.memory_system = EnhancedMemorySystem()
         try:
+            self.memory_system = EnhancedMemorySystem()
             from huggingface_hub import InferenceClient
+            if not Config.HF_API_TOKEN:
+                raise ValueError("HF_API_TOKEN not set in environment")
             self.api = InferenceClient(token=Config.HF_API_TOKEN)
             logging.info("Initialized Hugging Face InferenceClient")
         except Exception as e:
-            logging.error(f"Failed to initialize InferenceClient: {e}")
+            logging.error(f"Failed to initialize Chatbot: {e}")
             self.api = None
         self.last_memory = None
 
@@ -446,7 +453,6 @@ Respond naturally, incorporating relevant memories if applicable."""
             full_memory = f"User: {user_input}\nAssistant: {response_text}"
             self.last_memory = self.memory_system.add_memory(full_memory, self.last_memory)
 
-            # Save to database
             timestamp = datetime.now().isoformat()
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
@@ -461,7 +467,7 @@ Respond naturally, incorporating relevant memories if applicable."""
             return response_text
         except Exception as e:
             logging.error(f"API error in generate_response: {e}")
-            return "Sorry, I encountered an error. Try again later."
+            return f"Sorry, I encountered an error: {str(e)}. Try again later."
 
     def get_chat_history(self, user_id: str) -> List[Dict[str, str]]:
         try:
@@ -470,6 +476,7 @@ Respond naturally, incorporating relevant memories if applicable."""
             c.execute("SELECT role, content FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,))
             history = [{"role": row[0], "content": row[1]} for row in c.fetchall()]
             conn.close()
+            logging.info(f"Retrieved chat history for user {user_id}")
             return history
         except Exception as e:
             logging.error(f"Error retrieving chat history for user {user_id}: {e}")
@@ -482,7 +489,7 @@ chatbot = Chatbot()
 @app.route('/')
 def index():
     if 'user_id' not in session:
-        session['user_id'] = str(uuid.uuid4())  # Generate unique user ID
+        session['user_id'] = str(uuid.uuid4())
     user_id = session['user_id']
     messages = chatbot.get_chat_history(user_id)
     return render_template('index.html', messages=messages)
@@ -494,8 +501,8 @@ def chat():
     if not user_input:
         return jsonify({'error': 'No message provided'}), 400
 
-    user_id = session.get('user_id', str(uuid.uuid4()))  # Fallback to new ID if not set
-    session['user_id'] = user_id  # Ensure user_id is in session
+    user_id = session.get('user_id', str(uuid.uuid4()))
+    session['user_id'] = user_id
 
     response = chatbot.generate_response(user_input, user_id)
     return jsonify({'response': response})
@@ -512,7 +519,10 @@ def stats():
     return jsonify(stats)
 
 
+@app.route('/health')
+def health_check():
+    return jsonify({'status': 'healthy'}), 200
+
+
 if __name__ == "__main__":
-    # Use Render's dynamically assigned port
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)
