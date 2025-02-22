@@ -440,13 +440,13 @@ class Chatbot:
 
 Current user message: {user_input}
 
-Respond naturally, incorporating relevant memories if applicable."""
+Respond as a chatbot in a short, concise way. Use relevant memories if they apply, keeping it natural and to the point."""
 
             response_text = self.api.text_generation(
                 prompt,
-                max_new_tokens=350,
+                max_new_tokens=500,
                 model="meta-llama/Llama-3.2-11B-Vision-Instruct",
-                temperature=0.3,
+                temperature=0.5,
                 top_p=0.95,
                 repetition_penalty=1.5
             )
@@ -525,4 +525,6 @@ def health_check():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run()
+    port = int(os.getenv("PORT", 5000))  # Render sets PORT dynamically
+    app.run(host='0.0.0.0', port=port)
